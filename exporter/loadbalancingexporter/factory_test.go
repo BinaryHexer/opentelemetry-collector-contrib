@@ -24,7 +24,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestProcessorGetsCreatedWithValidConfiguration(t *testing.T) {
+func TestExporterGetsCreatedWithValidConfiguration(t *testing.T) {
 	// prepare
 	factory := NewFactory()
 	creationParams := component.ExporterCreateParams{Logger: zap.NewNop()}

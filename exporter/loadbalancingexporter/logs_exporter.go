@@ -16,7 +16,6 @@ package loadbalancingexporter
 
 import (
 	"context"
-	"fmt"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/batchpertrace"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
@@ -34,129 +33,40 @@ var _ component.LogsExporter = (*logExporterImp)(nil)
 
 type logExporterImp struct {
 	logger *zap.Logger
-	config Config
-	host   component.Host
 
-	res  resolver
-	ring *hashRing
-
-	exporters            map[string]component.LogsExporter
-	exporterFactory      component.ExporterFactory
-	templateCreateParams component.ExporterCreateParams
+	loadBalancer LoadBalancer
 
 	stopped    bool
 	shutdownWg sync.WaitGroup
-	updateLock sync.RWMutex
 }
 
-// Crete new logs exporter
+// Create new logs exporter
 func newLogsExporter(params component.ExporterCreateParams, cfg configmodels.Exporter) (*logExporterImp, error) {
-	oCfg := cfg.(*Config)
+	exporterFactory := otlpexporter.NewFactory()
 
 	tmplParams := component.ExporterCreateParams{
 		Logger:               params.Logger,
 		ApplicationStartInfo: params.ApplicationStartInfo,
 	}
 
-	if oCfg.Resolver.DNS != nil && oCfg.Resolver.Static != nil {
-		return nil, errMultipleResolversProvided
-	}
-
-	var res resolver
-	if oCfg.Resolver.Static != nil {
-		var err error
-		res, err = newStaticResolver(oCfg.Resolver.Static.Hostnames)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if oCfg.Resolver.DNS != nil {
-		dnsLogger := params.Logger.With(zap.String("resolver", "dns"))
-
-		var err error
-		res, err = newDNSResolver(dnsLogger, oCfg.Resolver.DNS.Hostname, oCfg.Resolver.DNS.Port)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if res == nil {
-		return nil, errNoResolver
-	}
+	loadBalancer, _ := newLoadBalancer(params, cfg, func(ctx context.Context, endpoint string) (component.Exporter, error) {
+		oCfg := cfg.(*Config).Protocol.OTLP
+		oCfg.Endpoint = endpoint
+		return exporterFactory.CreateLogsExporter(ctx, tmplParams, &oCfg)
+	})
 
 	return &logExporterImp{
-		logger: params.Logger,
-		config: *oCfg,
-
-		res: res,
-
-		exporters:            map[string]component.LogsExporter{},
-		exporterFactory:      otlpexporter.NewFactory(),
-		templateCreateParams: tmplParams,
+		logger:       params.Logger,
+		loadBalancer: loadBalancer,
 	}, nil
 }
 
 func (e *logExporterImp) Start(ctx context.Context, host component.Host) error {
-	e.res.onChange(e.onBackendChanges)
-	e.host = host
-	if err := e.res.start(ctx); err != nil {
+	if err := e.loadBalancer.Start(ctx, host); err != nil {
 		return err
 	}
 
 	return nil
-}
-
-func (e *logExporterImp) onBackendChanges(resolved []string) {
-	newRing := newHashRing(resolved)
-
-	if !newRing.equal(e.ring) {
-		e.updateLock.Lock()
-		defer e.updateLock.Unlock()
-
-		e.ring = newRing
-
-		// TODO: set a timeout?
-		ctx := context.Background()
-
-		// add the missing exporters first
-		e.addMissingExporters(ctx, resolved)
-		e.removeExtraExporters(ctx, resolved)
-	}
-}
-
-func (e *logExporterImp) addMissingExporters(ctx context.Context, endpoints []string) {
-	for _, endpoint := range endpoints {
-		endpoint = endpointWithPort(endpoint)
-
-		if _, exists := e.exporters[endpoint]; !exists {
-			cfg := e.buildExporterConfig(endpoint)
-			exp, err := e.exporterFactory.CreateLogsExporter(ctx, e.templateCreateParams, &cfg)
-			if err != nil {
-				e.logger.Error("failed to create new log exporter for endpoint", zap.String("endpoint", endpoint), zap.Error(err))
-				continue
-			}
-			if err = exp.Start(ctx, e.host); err != nil {
-				e.logger.Error("failed to start new log exporter for endpoint", zap.String("endpoint", endpoint), zap.Error(err))
-				continue
-			}
-			e.exporters[endpoint] = exp
-		}
-	}
-}
-
-func (e *logExporterImp) buildExporterConfig(endpoint string) otlpexporter.Config {
-	oCfg := e.config.Protocol.OTLP
-	oCfg.Endpoint = endpoint
-	return oCfg
-}
-
-func (e *logExporterImp) removeExtraExporters(ctx context.Context, endpoints []string) {
-	for existing := range e.exporters {
-		if !endpointFound(existing, endpoints) {
-			e.exporters[existing].Shutdown(ctx)
-			delete(e.exporters, existing)
-		}
-	}
 }
 
 func (e *logExporterImp) Shutdown(context.Context) error {
@@ -183,20 +93,13 @@ func (e *logExporterImp) consumeLog(ctx context.Context, ld pdata.Logs) error {
 		return errNoTracesInBatch
 	}
 
-	// NOTE: make rolling updates of next tier of collectors work. currently this may cause
-	// data loss because the latest batches sent to outdated backend will never find their way out.
-	// for details: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/1690
-	e.updateLock.RLock()
-	endpoint := e.ring.endpointFor(traceID)
-	exp, found := e.exporters[endpoint]
-	e.updateLock.RUnlock()
-	if !found {
-		// something is really wrong... how come we couldn't find the exporter??
-		return fmt.Errorf("couldn't find the exporter for the endpoint %q", endpoint)
+	exp, endpoint, err := e.loadBalancer.Exporter(traceID)
+	if err != nil {
+		return err
 	}
 
 	start := time.Now()
-	err := exp.ConsumeLogs(ctx, ld)
+	err = exp.(component.LogsExporter).ConsumeLogs(ctx, ld)
 	duration := time.Since(start)
 	ctx, _ = tag.New(ctx, tag.Upsert(tag.MustNewKey("endpoint"), endpoint))
 
@@ -228,8 +131,4 @@ func traceIDFromLogs(ld pdata.Logs) pdata.TraceID {
 	}
 
 	return logs.At(0).TraceID()
-}
-
-func (e *logExporterImp) GetCapabilities() component.ProcessorCapabilities {
-	return component.ProcessorCapabilities{MutatesConsumedData: false}
 }
