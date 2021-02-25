@@ -42,3 +42,9 @@ service:
       processors: []
       exporters:
       - loadbalancing
+    logs:
+      receivers:
+        - examplereceiver
+      processors: []
+      exporters:
+        - loadbalancing
