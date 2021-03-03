@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configmodels"
+	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	"go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.uber.org/zap"
@@ -195,7 +196,10 @@ func TestOnBackendChanges(t *testing.T) {
 	params := component.ExporterCreateParams{
 		Logger: zap.NewNop(),
 	}
-	p, err := newLoadBalancer(params, config, nil)
+	componentFactory := func(ctx context.Context, endpoint string) (component.Exporter, error) {
+		return mockComponent{}, nil
+	}
+	p, err := newLoadBalancer(params, config, componentFactory)
 	require.NotNil(t, p)
 	require.NoError(t, err)
 
@@ -352,159 +356,53 @@ func TestEndpointWithPort(t *testing.T) {
 	}
 }
 
-// func TestFailedExporterInRing(t *testing.T) {
-// 	// this test is based on the discussion in the original PR for this exporter:
-// 	// https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/1542#discussion_r521268180
-// 	// prepare
-// 	config := &Config{
-// 		Resolver: ResolverSettings{
-// 			Static: &StaticResolver{Hostnames: []string{"endpoint-1", "endpoint-2"}},
-// 		},
-// 	}
-// 	params := component.ExporterCreateParams{
-// 		Logger: zap.NewNop(),
-// 	}
-// 	p, err := newTracesExporter(params, config)
-// 	require.NotNil(t, p)
-// 	require.NoError(t, err)
-//
-// 	err = p.Start(context.Background(), componenttest.NewNopHost())
-// 	require.NoError(t, err)
-//
-// 	// simulate the case where one of the exporters failed to be created and do not exist in the internal map
-// 	// this is a case that we are not even sure that might happen, so, this test case is here to document
-// 	// this behavior. As the solution would require more locks/syncs/checks, we should probably wait to see
-// 	// if this is really a problem in the real world
-// 	delete(p.exporters, "endpoint-2")
-//
-// 	// sanity check
-// 	require.Contains(t, p.res.(*staticResolver).endpoints, "endpoint-2")
-//
-// 	// test
-// 	// this trace ID will reach the endpoint-2 -- see the consistent hashing tests for more info
-// 	traceForMissingEndpoint := simpleTraceWithID(pdata.NewTraceID([16]byte{128, 128, 0, 0}))
-// 	err = p.ConsumeTraces(context.Background(), traceForMissingEndpoint)
-//
-// 	// verify
-// 	assert.Error(t, err)
-// }
-//
-// func TestRollingUpdatesWhenConsumeTraces(t *testing.T) {
-// 	// this test is based on the discussion in the following issue for this exporter:
-// 	// https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/1690
-// 	// prepare
-//
-// 	// simulate rolling updates, the dns resolver should resolve in the following order
-// 	// ["127.0.0.1"] -> ["127.0.0.1", "127.0.0.2"] -> ["127.0.0.2"]
-// 	res, err := newDNSResolver(zap.NewNop(), "service-1", "")
-// 	require.NoError(t, err)
-//
-// 	resolverCh := make(chan struct{}, 1)
-// 	counter := 0
-// 	resolve := [][]net.IPAddr{
-// 		{
-// 			{IP: net.IPv4(127, 0, 0, 1)},
-// 		}, {
-// 			{IP: net.IPv4(127, 0, 0, 1)},
-// 			{IP: net.IPv4(127, 0, 0, 2)},
-// 		}, {
-// 			{IP: net.IPv4(127, 0, 0, 2)},
-// 		},
-// 	}
-// 	res.resolver = &mockDNSResolver{
-// 		onLookupIPAddr: func(context.Context, string) ([]net.IPAddr, error) {
-// 			defer func() {
-// 				counter++
-// 			}()
-//
-// 			if counter <= 2 {
-// 				return resolve[counter], nil
-// 			}
-//
-// 			if counter == 3 {
-// 				// stop as soon as rolling updates end
-// 				resolverCh <- struct{}{}
-// 			}
-//
-// 			return resolve[2], nil
-// 		},
-// 	}
-// 	res.resInterval = 10 * time.Millisecond
-//
-// 	config := &Config{
-// 		Resolver: ResolverSettings{
-// 			DNS: &DNSResolver{Hostname: "service-1", Port: ""},
-// 		},
-// 	}
-// 	params := component.ExporterCreateParams{Logger: zap.NewNop()}
-// 	p, err := newTracesExporter(params, config)
-// 	require.NotNil(t, p)
-// 	require.NoError(t, err)
-//
-// 	p.res = res
-//
-// 	var counter1, counter2 int64
-// 	defaultExporters := map[string]component.TracesExporter{
-// 		"127.0.0.1": &mockTracesExporter{
-// 			ConsumeTracesFn: func(ctx context.Context, td pdata.Traces) error {
-// 				atomic.AddInt64(&counter1, 1)
-// 				// simulate an unreachable backend
-// 				time.Sleep(10 * time.Second)
-// 				return nil
-// 			},
-// 		},
-// 		"127.0.0.2": &mockTracesExporter{
-// 			ConsumeTracesFn: func(ctx context.Context, td pdata.Traces) error {
-// 				atomic.AddInt64(&counter2, 1)
-// 				return nil
-// 			},
-// 		},
-// 	}
-//
-// 	// test
-// 	err = p.Start(context.Background(), componenttest.NewNopHost())
-// 	require.NoError(t, err)
-// 	defer p.Shutdown(context.Background())
-// 	// ensure using default exporters
-// 	p.updateLock.Lock()
-// 	p.exporters = defaultExporters
-// 	p.updateLock.Unlock()
-// 	p.res.onChange(func(endpoints []string) {
-// 		p.updateLock.Lock()
-// 		p.exporters = defaultExporters
-// 		p.updateLock.Unlock()
-// 	})
-//
-// 	ctx, cancel := context.WithCancel(context.Background())
-// 	// keep consuming traces every 2ms
-// 	consumeCh := make(chan struct{})
-// 	go func(ctx context.Context) {
-// 		ticker := time.NewTicker(2 * time.Millisecond)
-// 		for {
-// 			select {
-// 			case <-ctx.Done():
-// 				consumeCh <- struct{}{}
-// 				return
-// 			case <-ticker.C:
-// 				go p.ConsumeTraces(ctx, randomTraces())
-// 			}
-// 		}
-// 	}(ctx)
-//
-// 	// give limited but enough time to rolling updates. otherwise this test
-// 	// will still pass due to the 10 secs of sleep that is used to simulate
-// 	// unreachable backends.
-// 	go func() {
-// 		time.Sleep(50 * time.Millisecond)
-// 		resolverCh <- struct{}{}
-// 	}()
-//
-// 	<-resolverCh
-// 	cancel()
-// 	<-consumeCh
-//
-// 	// verify
-// 	require.Equal(t, []string{"127.0.0.2"}, res.endpoints)
-// 	require.Greater(t, atomic.LoadInt64(&counter1), int64(0))
-// 	require.Greater(t, atomic.LoadInt64(&counter2), int64(0))
-// }
+func TestFailedExporterInRing(t *testing.T) {
+	// this test is based on the discussion in the original PR for this exporter:
+	// https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/1542#discussion_r521268180
+	// prepare
+	config := &Config{
+		Resolver: ResolverSettings{
+			Static: &StaticResolver{Hostnames: []string{"endpoint-1", "endpoint-2"}},
+		},
+	}
+	params := component.ExporterCreateParams{
+		Logger: zap.NewNop(),
+	}
+	componentFactory := func(ctx context.Context, endpoint string) (component.Exporter, error) {
+		return mockComponent{}, nil
+	}
+	p, err := newLoadBalancer(params, config, componentFactory)
+	require.NotNil(t, p)
+	require.NoError(t, err)
+
+	err = p.Start(context.Background(), componenttest.NewNopHost())
+	require.NoError(t, err)
+
+	// simulate the case where one of the exporters failed to be created and do not exist in the internal map
+	// this is a case that we are not even sure that might happen, so, this test case is here to document
+	// this behavior. As the solution would require more locks/syncs/checks, we should probably wait to see
+	// if this is really a problem in the real world
+	delete(p.exporters, "endpoint-2")
+
+	// sanity check
+	require.Contains(t, p.res.(*staticResolver).endpoints, "endpoint-2")
+
+	// test
+	// this trace ID will reach the endpoint-2 -- see the consistent hashing tests for more info
+	_, _, err = p.Exporter(pdata.NewTraceID([16]byte{128, 128, 0, 0}))
+
+	// verify
+	assert.Error(t, err)
+}
+
+var _ component.Exporter = (*mockComponent)(nil)
+
+type mockComponent struct{}
+
+func (m mockComponent) Start(ctx context.Context, host component.Host) error {
+	return nil
+}
+
+func (m mockComponent) Shutdown(ctx context.Context) error {
+	return nil
+}

@@ -35,11 +35,11 @@ var (
 	errMultipleResolversProvided = errors.New("only one resolver should be specified")
 )
 
-var _ LoadBalancer = (*loadBalancerImp)(nil)
+var _ loadBalancer = (*loadBalancerImp)(nil)
 
-type ComponentFactory func(ctx context.Context, endpoint string) (component.Exporter, error)
+type componentFactory func(ctx context.Context, endpoint string) (component.Exporter, error)
 
-type LoadBalancer interface {
+type loadBalancer interface {
 	component.Component
 	Exporter(traceID pdata.TraceID) (component.Exporter, string, error)
 }
@@ -51,7 +51,7 @@ type loadBalancerImp struct {
 	res  resolver
 	ring *hashRing
 
-	componentFactory ComponentFactory
+	componentFactory componentFactory
 	exporters        map[string]component.Exporter
 
 	stopped    bool
@@ -59,7 +59,7 @@ type loadBalancerImp struct {
 }
 
 // Create new load balancer
-func newLoadBalancer(params component.ExporterCreateParams, cfg configmodels.Exporter, factory ComponentFactory) (*loadBalancerImp, error) {
+func newLoadBalancer(params component.ExporterCreateParams, cfg configmodels.Exporter, factory componentFactory) (*loadBalancerImp, error) {
 	oCfg := cfg.(*Config)
 
 	if oCfg.Resolver.DNS != nil && oCfg.Resolver.Static != nil {

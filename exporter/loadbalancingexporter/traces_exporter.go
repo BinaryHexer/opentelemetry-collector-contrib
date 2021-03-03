@@ -41,7 +41,7 @@ var (
 type traceExporterImp struct {
 	logger *zap.Logger
 
-	loadBalancer LoadBalancer
+	loadBalancer loadBalancer
 
 	stopped    bool
 	shutdownWg sync.WaitGroup
@@ -56,16 +56,24 @@ func newTracesExporter(params component.ExporterCreateParams, cfg configmodels.E
 		ApplicationStartInfo: params.ApplicationStartInfo,
 	}
 
-	loadBalancer, _ := newLoadBalancer(params, cfg, func(ctx context.Context, endpoint string) (component.Exporter, error) {
-		oCfg := cfg.(*Config).Protocol.OTLP
-		oCfg.Endpoint = endpoint
+	loadBalancer, err := newLoadBalancer(params, cfg, func(ctx context.Context, endpoint string) (component.Exporter, error) {
+		oCfg := buildExporterConfig(cfg.(*Config), endpoint)
 		return exporterFactory.CreateTracesExporter(ctx, tmplParams, &oCfg)
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	return &traceExporterImp{
 		logger:       params.Logger,
 		loadBalancer: loadBalancer,
 	}, nil
+}
+
+func buildExporterConfig(cfg *Config, endpoint string) otlpexporter.Config {
+	oCfg := cfg.Protocol.OTLP
+	oCfg.Endpoint = endpoint
+	return oCfg
 }
 
 func (e *traceExporterImp) Start(ctx context.Context, host component.Host) error {

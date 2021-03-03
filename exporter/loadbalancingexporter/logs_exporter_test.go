@@ -35,7 +35,7 @@ func TestLogExporterStart(t *testing.T) {
 	p, err := newTracesExporter(params, config)
 	require.NotNil(t, p)
 	require.NoError(t, err)
-	p.res = &mockResolver{}
+	// p.res = &mockResolver{}
 
 	// test
 	res := p.Start(context.Background(), componenttest.NewNopHost())
@@ -68,18 +68,23 @@ func TestConsumeLogs(t *testing.T) {
 	params := component.ExporterCreateParams{
 		Logger: zap.NewNop(),
 	}
+	componentFactory := func(ctx context.Context, endpoint string) (component.Exporter, error) {
+		return mockComponent{}, nil
+	}
+	lb, err := newLoadBalancer(params, config, componentFactory)
 	p, err := newLogsExporter(params, config)
 	require.NotNil(t, p)
 	require.NoError(t, err)
 
 	// pre-load an exporter here, so that we don't use the actual OTLP exporter
-	p.exporters["endpoint-1"] = &componenttest.ExampleExporterConsumer{}
-	p.res = &mockResolver{
+	lb.exporters["endpoint-1"] = &componenttest.ExampleExporterConsumer{}
+	lb.res = &mockResolver{
 		triggerCallbacks: true,
 		onResolve: func(ctx context.Context) ([]string, error) {
 			return []string{"endpoint-1"}, nil
 		},
 	}
+	p.loadBalancer = lb
 
 	err = p.Start(context.Background(), componenttest.NewNopHost())
 	require.NoError(t, err)
@@ -90,6 +95,41 @@ func TestConsumeLogs(t *testing.T) {
 
 	// verify
 	assert.Nil(t, res)
+}
+
+func TestLogBatchWithTwoTraces(t *testing.T) {
+	// prepare
+	config := simpleConfig()
+	params := component.ExporterCreateParams{
+		Logger: zap.NewNop(),
+	}
+	componentFactory := func(ctx context.Context, endpoint string) (component.Exporter, error) {
+		return mockComponent{}, nil
+	}
+	lb, err := newLoadBalancer(params, config, componentFactory)
+	p, err := newLogsExporter(params, config)
+	require.NotNil(t, p)
+	require.NoError(t, err)
+
+	p.loadBalancer = lb
+	err = p.Start(context.Background(), componenttest.NewNopHost())
+	require.NoError(t, err)
+
+	sink := &componenttest.ExampleExporterConsumer{}
+	lb.exporters["endpoint-1"] = sink
+
+	first := simpleLogs()
+	second := simpleLogWithID(pdata.NewTraceID([16]byte{2, 3, 4, 5}))
+	batch := pdata.NewLogs()
+	batch.ResourceLogs().Append(first.ResourceLogs().At(0))
+	batch.ResourceLogs().Append(second.ResourceLogs().At(0))
+
+	// test
+	err = p.ConsumeLogs(context.Background(), batch)
+
+	// verify
+	assert.NoError(t, err)
+	assert.Len(t, sink.Logs, 2)
 }
 
 func TestNoTracesInLogBatch(t *testing.T) {
@@ -127,36 +167,6 @@ func TestNoTracesInLogBatch(t *testing.T) {
 			assert.Equal(t, pdata.InvalidTraceID(), res)
 		})
 	}
-}
-
-func TestLogBatchWithTwoTraces(t *testing.T) {
-	// prepare
-	config := simpleConfig()
-	params := component.ExporterCreateParams{
-		Logger: zap.NewNop(),
-	}
-	p, err := newLogsExporter(params, config)
-	require.NotNil(t, p)
-	require.NoError(t, err)
-
-	err = p.Start(context.Background(), componenttest.NewNopHost())
-	require.NoError(t, err)
-
-	sink := &componenttest.ExampleExporterConsumer{}
-	p.exporters["endpoint-1"] = sink
-
-	first := simpleLogs()
-	second := simpleLogWithID(pdata.NewTraceID([16]byte{2, 3, 4, 5}))
-	batch := pdata.NewLogs()
-	batch.ResourceLogs().Append(first.ResourceLogs().At(0))
-	batch.ResourceLogs().Append(second.ResourceLogs().At(0))
-
-	// test
-	err = p.ConsumeLogs(context.Background(), batch)
-
-	// verify
-	assert.NoError(t, err)
-	assert.Len(t, sink.Logs, 2)
 }
 
 func randomLogs() pdata.Logs {

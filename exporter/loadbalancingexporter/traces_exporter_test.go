@@ -25,8 +25,11 @@ import (
 	"go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.uber.org/zap"
 	"math/rand"
+	"net"
 	"path"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestTraceExporterStart(t *testing.T) {
@@ -38,7 +41,6 @@ func TestTraceExporterStart(t *testing.T) {
 	p, err := newTracesExporter(params, config)
 	require.NotNil(t, p)
 	require.NoError(t, err)
-	p.res = &mockResolver{}
 
 	// test
 	res := p.Start(context.Background(), componenttest.NewNopHost())
@@ -71,18 +73,23 @@ func TestConsumeTraces(t *testing.T) {
 	params := component.ExporterCreateParams{
 		Logger: zap.NewNop(),
 	}
+	componentFactory := func(ctx context.Context, endpoint string) (component.Exporter, error) {
+		return mockComponent{}, nil
+	}
+	lb, err := newLoadBalancer(params, config, componentFactory)
 	p, err := newTracesExporter(params, config)
 	require.NotNil(t, p)
 	require.NoError(t, err)
 
 	// pre-load an exporter here, so that we don't use the actual OTLP exporter
-	p.exporters["endpoint-1"] = &componenttest.ExampleExporterConsumer{}
-	p.res = &mockResolver{
+	lb.exporters["endpoint-1"] = &componenttest.ExampleExporterConsumer{}
+	lb.res = &mockResolver{
 		triggerCallbacks: true,
 		onResolve: func(ctx context.Context) ([]string, error) {
 			return []string{"endpoint-1"}, nil
 		},
 	}
+	p.loadBalancer = lb
 
 	err = p.Start(context.Background(), componenttest.NewNopHost())
 	require.NoError(t, err)
@@ -107,16 +114,11 @@ func TestBuildExporterConfig(t *testing.T) {
 	require.NotNil(t, cfg)
 	require.NotNil(t, cfg.Exporters["loadbalancing"])
 
-	params := component.ExporterCreateParams{
-		Logger: zap.NewNop(),
-	}
-	e, err := newTracesExporter(params, cfg.Exporters["loadbalancing"])
-	require.NotNil(t, e)
-	require.NoError(t, err)
+	c := cfg.Exporters["loadbalancing"]
 
 	// test
-	defaultCfg := e.exporterFactory.CreateDefaultConfig().(*otlpexporter.Config)
-	exporterCfg := e.buildExporterConfig("the-endpoint")
+	defaultCfg := otlpexporter.NewFactory().CreateDefaultConfig().(*otlpexporter.Config)
+	exporterCfg := buildExporterConfig(c.(*Config), "the-endpoint")
 
 	// verify
 	grpcSettings := defaultCfg.GRPCClientSettings
@@ -172,15 +174,20 @@ func TestBatchWithTwoTraces(t *testing.T) {
 	params := component.ExporterCreateParams{
 		Logger: zap.NewNop(),
 	}
+	componentFactory := func(ctx context.Context, endpoint string) (component.Exporter, error) {
+		return mockComponent{}, nil
+	}
+	lb, err := newLoadBalancer(params, config, componentFactory)
 	p, err := newTracesExporter(params, config)
 	require.NotNil(t, p)
 	require.NoError(t, err)
 
+	p.loadBalancer = lb
 	err = p.Start(context.Background(), componenttest.NewNopHost())
 	require.NoError(t, err)
 
 	sink := &componenttest.ExampleExporterConsumer{}
-	p.loadBalancer.exporters["endpoint-1"] = sink
+	lb.exporters["endpoint-1"] = sink
 
 	first := simpleTraces()
 	second := simpleTraceWithID(pdata.NewTraceID([16]byte{2, 3, 4, 5}))
@@ -194,6 +201,131 @@ func TestBatchWithTwoTraces(t *testing.T) {
 	// verify
 	assert.NoError(t, err)
 	assert.Len(t, sink.Traces, 2)
+}
+
+func TestRollingUpdatesWhenConsumeTraces(t *testing.T) {
+	// this test is based on the discussion in the following issue for this exporter:
+	// https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/1690
+	// prepare
+
+	// simulate rolling updates, the dns resolver should resolve in the following order
+	// ["127.0.0.1"] -> ["127.0.0.1", "127.0.0.2"] -> ["127.0.0.2"]
+	res, err := newDNSResolver(zap.NewNop(), "service-1", "")
+	require.NoError(t, err)
+
+	resolverCh := make(chan struct{}, 1)
+	counter := 0
+	resolve := [][]net.IPAddr{
+		{
+			{IP: net.IPv4(127, 0, 0, 1)},
+		}, {
+			{IP: net.IPv4(127, 0, 0, 1)},
+			{IP: net.IPv4(127, 0, 0, 2)},
+		}, {
+			{IP: net.IPv4(127, 0, 0, 2)},
+		},
+	}
+	res.resolver = &mockDNSResolver{
+		onLookupIPAddr: func(context.Context, string) ([]net.IPAddr, error) {
+			defer func() {
+				counter++
+			}()
+
+			if counter <= 2 {
+				return resolve[counter], nil
+			}
+
+			if counter == 3 {
+				// stop as soon as rolling updates end
+				resolverCh <- struct{}{}
+			}
+
+			return resolve[2], nil
+		},
+	}
+	res.resInterval = 10 * time.Millisecond
+
+	config := &Config{
+		Resolver: ResolverSettings{
+			DNS: &DNSResolver{Hostname: "service-1", Port: ""},
+		},
+	}
+	params := component.ExporterCreateParams{Logger: zap.NewNop()}
+	componentFactory := func(ctx context.Context, endpoint string) (component.Exporter, error) {
+		return mockComponent{}, nil
+	}
+	lb, err := newLoadBalancer(params, config, componentFactory)
+	p, err := newTracesExporter(params, config)
+	require.NotNil(t, p)
+	require.NoError(t, err)
+
+	lb.res = res
+	p.loadBalancer = lb
+
+	var counter1, counter2 int64
+	defaultExporters := map[string]component.Exporter{
+		"127.0.0.1": &mockTracesExporter{
+			ConsumeTracesFn: func(ctx context.Context, td pdata.Traces) error {
+				atomic.AddInt64(&counter1, 1)
+				// simulate an unreachable backend
+				time.Sleep(10 * time.Second)
+				return nil
+			},
+		},
+		"127.0.0.2": &mockTracesExporter{
+			ConsumeTracesFn: func(ctx context.Context, td pdata.Traces) error {
+				atomic.AddInt64(&counter2, 1)
+				return nil
+			},
+		},
+	}
+
+	// test
+	err = p.Start(context.Background(), componenttest.NewNopHost())
+	require.NoError(t, err)
+	defer p.Shutdown(context.Background())
+	// ensure using default exporters
+	lb.updateLock.Lock()
+	lb.exporters = defaultExporters
+	lb.updateLock.Unlock()
+	lb.res.onChange(func(endpoints []string) {
+		lb.updateLock.Lock()
+		lb.exporters = defaultExporters
+		lb.updateLock.Unlock()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// keep consuming traces every 2ms
+	consumeCh := make(chan struct{})
+	go func(ctx context.Context) {
+		ticker := time.NewTicker(2 * time.Millisecond)
+		for {
+			select {
+			case <-ctx.Done():
+				consumeCh <- struct{}{}
+				return
+			case <-ticker.C:
+				go p.ConsumeTraces(ctx, randomTraces())
+			}
+		}
+	}(ctx)
+
+	// give limited but enough time to rolling updates. otherwise this test
+	// will still pass due to the 10 secs of sleep that is used to simulate
+	// unreachable backends.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		resolverCh <- struct{}{}
+	}()
+
+	<-resolverCh
+	cancel()
+	<-consumeCh
+
+	// verify
+	require.Equal(t, []string{"127.0.0.2"}, res.endpoints)
+	require.Greater(t, atomic.LoadInt64(&counter1), int64(0))
+	require.Greater(t, atomic.LoadInt64(&counter2), int64(0))
 }
 
 func randomTraces() pdata.Traces {

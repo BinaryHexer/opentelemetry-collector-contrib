@@ -34,7 +34,7 @@ var _ component.LogsExporter = (*logExporterImp)(nil)
 type logExporterImp struct {
 	logger *zap.Logger
 
-	loadBalancer LoadBalancer
+	loadBalancer loadBalancer
 
 	stopped    bool
 	shutdownWg sync.WaitGroup
