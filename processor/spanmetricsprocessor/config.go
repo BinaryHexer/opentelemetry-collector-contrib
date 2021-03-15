@@ -34,7 +34,7 @@ type Config struct {
 	MetricsExporter string `mapstructure:"metrics_exporter"`
 
 	// LatencyHistogramBuckets is the list of durations representing latency histogram buckets.
-	// See defaultLatencyHistogramBucketsMs in processor.go for the default value.
+	// See defaultLatencyHistogramBucketsMs in trace_processor.go for the default value.
 	LatencyHistogramBuckets []time.Duration `mapstructure:"latency_histogram_buckets"`
 
 	// Dimensions defines the list of additional dimensions on top of the provided:

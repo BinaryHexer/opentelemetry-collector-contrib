@@ -47,8 +47,13 @@ func (naf *numericAttributeFilter) OnLateArrivingSpans(Decision, []*pdata.Span) 
 	return nil
 }
 
-// Evaluate looks at the trace data and returns a corresponding SamplingDecision.
-func (naf *numericAttributeFilter) Evaluate(_ pdata.TraceID, trace *TraceData) (Decision, error) {
+func (naf *numericAttributeFilter) OnLateArrivingLogs(earlyDecision Decision, logs []*pdata.LogRecord) error {
+	naf.logger.Debug("Triggering action for late arriving logs in numeric-attribute filter")
+	return nil
+}
+
+// EvaluateTrace looks at the trace data and returns a corresponding SamplingDecision.
+func (naf *numericAttributeFilter) EvaluateTrace(_ pdata.TraceID, trace *TraceData) (Decision, error) {
 	trace.Lock()
 	batches := trace.ReceivedBatches
 	trace.Unlock()
@@ -71,5 +76,33 @@ func (naf *numericAttributeFilter) Evaluate(_ pdata.TraceID, trace *TraceData) (
 			}
 		}
 	}
+
+	return NotSampled, nil
+}
+
+func (naf *numericAttributeFilter) EvaluateLog(traceID pdata.TraceID, log *LogData) (Decision, error) {
+	log.Lock()
+	batches := log.ReceivedBatches
+	log.Unlock()
+	for _, batch := range batches {
+		rlogs := batch.ResourceLogs()
+		for i := 0; i < rlogs.Len(); i++ {
+			rl := rlogs.At(i)
+			illl := rl.InstrumentationLibraryLogs()
+			for j := 0; j < illl.Len(); j++ {
+				ill := illl.At(j)
+				for k := 0; k < ill.Logs().Len(); k++ {
+					span := ill.Logs().At(k)
+					if v, ok := span.Attributes().Get(naf.key); ok {
+						value := v.IntVal()
+						if value >= naf.minValue && value <= naf.maxValue {
+							return Sampled, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
 	return NotSampled, nil
 }

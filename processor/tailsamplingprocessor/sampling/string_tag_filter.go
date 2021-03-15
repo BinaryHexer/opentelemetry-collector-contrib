@@ -52,8 +52,12 @@ func (saf *stringAttributeFilter) OnLateArrivingSpans(Decision, []*pdata.Span) e
 	return nil
 }
 
+func (saf *stringAttributeFilter) OnLateArrivingLogs(earlyDecision Decision, logs []*pdata.LogRecord) error {
+	panic("implement me")
+}
+
 // Evaluate looks at the trace data and returns a corresponding SamplingDecision.
-func (saf *stringAttributeFilter) Evaluate(_ pdata.TraceID, trace *TraceData) (Decision, error) {
+func (saf *stringAttributeFilter) EvaluateTrace(_ pdata.TraceID, trace *TraceData) (Decision, error) {
 	saf.logger.Debug("Evaluting spans in string-tag filter")
 	trace.Lock()
 	batches := trace.ReceivedBatches
@@ -88,5 +92,44 @@ func (saf *stringAttributeFilter) Evaluate(_ pdata.TraceID, trace *TraceData) (D
 			}
 		}
 	}
+	return NotSampled, nil
+}
+
+func (saf *stringAttributeFilter) EvaluateLog(traceID pdata.TraceID, log *LogData) (Decision, error) {
+	saf.logger.Debug("Evaluting logs in string-tag filter")
+	log.Lock()
+	batches := log.ReceivedBatches
+	log.Unlock()
+	for _, batch := range batches {
+		rlogs := batch.ResourceLogs()
+
+		for i := 0; i < rlogs.Len(); i++ {
+			rl := rlogs.At(i)
+			resource := rl.Resource()
+			if v, ok := resource.Attributes().Get(saf.key); ok {
+				if _, ok := saf.values[v.StringVal()]; ok {
+					return Sampled, nil
+				}
+			}
+
+			illl := rl.InstrumentationLibraryLogs()
+			for j := 0; j < illl.Len(); j++ {
+				ill := illl.At(j)
+				for k := 0; k < ill.Logs().Len(); k++ {
+					log := ill.Logs().At(k)
+					if v, ok := log.Attributes().Get(saf.key); ok {
+						truncableStr := v.StringVal()
+						if len(truncableStr) > 0 {
+							if _, ok := saf.values[truncableStr]; ok {
+								return Sampled, nil
+							}
+						}
+					}
+
+				}
+			}
+		}
+	}
+
 	return NotSampled, nil
 }

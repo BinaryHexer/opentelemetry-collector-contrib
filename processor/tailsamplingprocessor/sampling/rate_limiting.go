@@ -47,8 +47,13 @@ func (r *rateLimiting) OnLateArrivingSpans(Decision, []*pdata.Span) error {
 	return nil
 }
 
+func (r *rateLimiting) OnLateArrivingLogs(earlyDecision Decision, logs []*pdata.LogRecord) error {
+	r.logger.Debug("Triggering action for late arriving logs in rate-limiting filter")
+	return nil
+}
+
 // Evaluate looks at the trace data and returns a corresponding SamplingDecision.
-func (r *rateLimiting) Evaluate(_ pdata.TraceID, trace *TraceData) (Decision, error) {
+func (r *rateLimiting) EvaluateTrace(_ pdata.TraceID, trace *TraceData) (Decision, error) {
 	r.logger.Debug("Evaluating spans in rate-limiting filter")
 	currSecond := time.Now().Unix()
 	if r.currentSecond != currSecond {
@@ -57,6 +62,23 @@ func (r *rateLimiting) Evaluate(_ pdata.TraceID, trace *TraceData) (Decision, er
 	}
 
 	spansInSecondIfSampled := r.spansInCurrentSecond + trace.SpanCount
+	if spansInSecondIfSampled < r.spansPerSecond {
+		r.spansInCurrentSecond = spansInSecondIfSampled
+		return Sampled, nil
+	}
+
+	return NotSampled, nil
+}
+
+func (r *rateLimiting) EvaluateLog(traceID pdata.TraceID, log *LogData) (Decision, error) {
+	r.logger.Debug("Evaluating spans in rate-limiting filter")
+	currSecond := time.Now().Unix()
+	if r.currentSecond != currSecond {
+		r.currentSecond = currSecond
+		r.spansInCurrentSecond = 0
+	}
+
+	spansInSecondIfSampled := r.spansInCurrentSecond + log.LogCount
 	if spansInSecondIfSampled < r.spansPerSecond {
 		r.spansInCurrentSecond = spansInSecondIfSampled
 		return Sampled, nil

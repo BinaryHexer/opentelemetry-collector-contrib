@@ -41,8 +41,18 @@ func (as *alwaysSample) OnLateArrivingSpans(Decision, []*pdata.Span) error {
 	return nil
 }
 
-// Evaluate looks at the trace data and returns a corresponding SamplingDecision.
-func (as *alwaysSample) Evaluate(pdata.TraceID, *TraceData) (Decision, error) {
+func (as *alwaysSample) OnLateArrivingLogs(earlyDecision Decision, logs []*pdata.LogRecord) error {
+	as.logger.Debug("Triggering action for late arriving logs in always-sample filter")
+	return nil
+}
+
+// EvaluateTrace looks at the trace data and returns a corresponding SamplingDecision.
+func (as *alwaysSample) EvaluateTrace(pdata.TraceID, *TraceData) (Decision, error) {
 	as.logger.Debug("Evaluating spans in always-sample filter")
+	return Sampled, nil
+}
+
+func (as *alwaysSample) EvaluateLog(traceID pdata.TraceID, log *LogData) (Decision, error) {
+	as.logger.Debug("Evaluating logs in always-sample filter")
 	return Sampled, nil
 }
