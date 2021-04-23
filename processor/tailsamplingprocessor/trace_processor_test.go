@@ -32,13 +32,16 @@ import (
 )
 
 const (
-	defaultTestDecisionWait = 30 * time.Second
+	defaultTestDecisionWait = 10 * time.Second
 )
 
-var testPolicy = []PolicyCfg{{Name: "test-policy", Type: AlwaysSample}}
+const delta = 0.1
+var samplingRatio = float32(0.50)
+var testPolicy = []PolicyCfg{{Name: "test-policy", Type: PercentageSample, PercentageSamplingCfg: PercentageSamplingCfg{SamplingPercentage: samplingRatio}}}
 
 func TestTraceSamplingPolicyTypicalPath(t *testing.T) {
-	traceIds, batches := generateIdsAndBatches(128)
+	num := 128
+	traceIds, batches := generateIdsAndBatches(num)
 	cfg := Config{
 		DecisionWait:            defaultTestDecisionWait,
 		NumTraces:               uint64(2 * len(traceIds)),
@@ -48,15 +51,20 @@ func TestTraceSamplingPolicyTypicalPath(t *testing.T) {
 	msp := new(consumertest.TracesSink)
 	tsp, _ := newTraceProcessor(zap.NewNop(), msp, cfg)
 
-	tsp.Start(context.Background(), componenttest.NewNopHost())
+	err := tsp.Start(context.Background(), componenttest.NewNopHost())
+	assert.NoError(t, err)
 
 	for _, batch := range batches {
-		tsp.ConsumeTraces(context.Background(), batch)
+		err := tsp.ConsumeTraces(context.Background(), batch)
+		assert.NoError(t, err)
 	}
 
-	time.Sleep(32 * time.Second)
+	time.Sleep(12 * time.Second)
 
-	assert.Equal(t, 8256, msp.SpansCount())
+	obsRatio := float64(len(msp.AllTraces())) / float64(num)
+	assert.InDelta(t, samplingRatio, obsRatio, delta)
+	//assert.Equal(t, 64, len(msp.AllTraces()))
+	//assert.Equal(t, 8256, msp.SpansCount())
 }
 
 //func TestSequentialTraceArrival(t *testing.T) {

@@ -33,13 +33,13 @@ import (
 // tailSamplingSpanProcessor handles the incoming trace data and uses the given sampling
 // policy to sample traces.
 type tailSamplingSpanProcessor struct {
-	nextConsumer      consumer.TracesConsumer
+	nextConsumer      consumer.Traces
 	samplingProcessor samplingProcessor
 }
 
 // newTraceProcessor returns a processor.TraceProcessor that will perform tail sampling according to the given
 // configuration.
-func newTraceProcessor(logger *zap.Logger, nextConsumer consumer.TracesConsumer, cfg Config) (component.TracesProcessor, error) {
+func newTraceProcessor(logger *zap.Logger, nextConsumer consumer.Traces, cfg Config) (component.TracesProcessor, error) {
 	if nextConsumer == nil {
 		return nil, componenterror.ErrNilNextConsumer
 	}

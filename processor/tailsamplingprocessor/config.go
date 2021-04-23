@@ -34,6 +34,8 @@ const (
 	StringAttribute PolicyType = "string_attribute"
 	// RateLimiting allows all traces until the specified limits are satisfied.
 	RateLimiting PolicyType = "rate_limiting"
+	// PercentageSample samples by the given percentage.
+	PercentageSample PolicyType = "percentage_sample"
 )
 
 // PolicyCfg holds the common configuration to all policies.
@@ -48,6 +50,8 @@ type PolicyCfg struct {
 	StringAttributeCfg StringAttributeCfg `mapstructure:"string_attribute"`
 	// Configs for rate limiting filter sampling policy evaluator.
 	RateLimitingCfg RateLimitingCfg `mapstructure:"rate_limiting"`
+	// Configs for percentage sample filter sampling policy evaluator.
+	PercentageSamplingCfg PercentageSamplingCfg `mapstructure:"percentage_sample"`
 }
 
 // NumericAttributeCfg holds the configurable settings to create a numeric attribute filter
@@ -75,6 +79,13 @@ type StringAttributeCfg struct {
 type RateLimitingCfg struct {
 	// SpansPerSecond sets the limit on the maximum nuber of spans that can be processed each second.
 	SpansPerSecond int64 `mapstructure:"spans_per_second"`
+}
+
+// PercentageSamplingCfg holds the configurable settings to create a percentage sampling policy evaluator.
+type PercentageSamplingCfg struct {
+	// SamplingPercentage is the percentage rate at which signals are going to be sampled. Defaults to zero, i.e.: no sample.
+	// Values greater or equal 100 are treated as "sample all signals".
+	SamplingPercentage float32 `mapstructure:"sampling_percentage"`
 }
 
 // Config holds the configuration for tail-based sampling.

@@ -77,6 +77,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/wavefrontreceiver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/windowsperfcountersreceiver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/zookeeperreceiver"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/zapprocessor"
 )
 
 func components() (component.Factories, error) {
@@ -180,6 +181,7 @@ func components() (component.Factories, error) {
 		routingprocessor.NewFactory(),
 		tailsamplingprocessor.NewFactory(),
 		spanmetricsprocessor.NewFactory(),
+		zapprocessor.NewFactory(),
 	}
 	for _, pr := range factories.Processors {
 		processors = append(processors, pr)

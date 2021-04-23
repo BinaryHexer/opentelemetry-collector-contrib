@@ -52,7 +52,7 @@ func (r *rateLimiting) OnLateArrivingLogs(earlyDecision Decision, logs []*pdata.
 	return nil
 }
 
-// Evaluate looks at the trace data and returns a corresponding SamplingDecision.
+// EvaluateTrace looks at the trace data and returns a corresponding SamplingDecision.
 func (r *rateLimiting) EvaluateTrace(_ pdata.TraceID, trace *TraceData) (Decision, error) {
 	r.logger.Debug("Evaluating spans in rate-limiting filter")
 	currSecond := time.Now().Unix()

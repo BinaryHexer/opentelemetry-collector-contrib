@@ -12,66 +12,48 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tailsamplingprocessor
+package zapprocessor
 
 import (
 	"context"
-	"sync"
-	"time"
 
-	"go.opencensus.io/stats/view"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config"
-	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/processor/processorhelper"
 )
 
 const (
-	// The value of "type" Tail Sampling in configuration.
-	typeStr = "tail_sampling"
+	// The value of "type" key in configuration.
+	typeStr = "zap"
 )
 
-var onceMetrics sync.Once
+var processorCapabilities = component.ProcessorCapabilities{MutatesConsumedData: true}
 
-// NewFactory returns a new factory for the Tail Sampling processor.
+// NewFactory creates a factory for the routing processor.
 func NewFactory() component.ProcessorFactory {
-	onceMetrics.Do(func() {
-		// TODO: this is hardcoding the metrics level and skips error handling
-		_ = view.Register(SamplingProcessorMetricViews(configtelemetry.LevelNormal)...)
-	})
-
 	return processorhelper.NewFactory(
 		typeStr,
 		createDefaultConfig,
-		processorhelper.WithTraces(createTraceProcessor),
-		processorhelper.WithLogs(createLogProcessor))
+		processorhelper.WithLogs(createLogProcessor),
+	)
 }
 
 func createDefaultConfig() config.Processor {
 	return &Config{
 		ProcessorSettings: config.NewProcessorSettings(typeStr),
-		DecisionWait:      30 * time.Second,
-		NumTraces:         50000,
 	}
-}
-
-func createTraceProcessor(
-	_ context.Context,
-	params component.ProcessorCreateParams,
-	cfg config.Processor,
-	nextConsumer consumer.Traces,
-) (component.TracesProcessor, error) {
-	tCfg := cfg.(*Config)
-	return newTraceProcessor(params.Logger, nextConsumer, *tCfg)
 }
 
 func createLogProcessor(
 	_ context.Context,
-	params component.ProcessorCreateParams,
+	_ component.ProcessorCreateParams,
 	cfg config.Processor,
 	nextConsumer consumer.Logs,
 ) (component.LogsProcessor, error) {
-	tCfg := cfg.(*Config)
-	return newLogProcessor(params.Logger, nextConsumer, *tCfg)
+	return processorhelper.NewLogsProcessor(
+		cfg,
+		nextConsumer,
+		newLogProcessor(),
+		processorhelper.WithCapabilities(processorCapabilities))
 }
