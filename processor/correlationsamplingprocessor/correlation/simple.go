@@ -1,4 +1,4 @@
-package correlatedsamplingprocessor
+package correlation
 
 import (
 	"context"
@@ -6,44 +6,26 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.uber.org/zap"
+	"google.golang.org/api/support/bundler"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlatedsamplingprocessor/sampling"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/sampling"
 )
 
-type signalType int32
-
-const (
-	Unknown signalType = iota
-	Trace
-	Log
-)
-
-type signal struct {
-	TraceID pdata.TraceID
-	Data    interface{}
-}
-
-type combinatorHook func(batches []*signal) (batch interface{})
-
-type decisionHook func(sampling.Filter, pdata.TraceID, interface{}) (sampling.Decision, error)
-
-type samplingHook func(interface{})
-
-var _ component.Processor = (*correlatedProcessor)(nil)
+var _ Processor = (*correlatedProcessor)(nil)
 
 type correlatedProcessor struct {
 	logger          *zap.Logger
 	combinatorHook  combinatorHook
 	decisionHook    decisionHook
 	samplingHook    samplingHook
-	nextConsumer    component.Processor
 	filters         []sampling.Filter
-	samplingTracker samplingTracker
+	samplingTracker sampling.Tracker
 	deleteChan      chan pdata.TraceID
 	batcher         batcher
+	bundler         *bundler.Bundler
 }
 
-func newCProcessor(logger *zap.Logger, cfg Config, ch combinatorHook, dh decisionHook, sh samplingHook) (*correlatedProcessor, error) {
+func NewProcessor(logger *zap.Logger, cfg Config, ch combinatorHook, dh decisionHook, sh samplingHook) (*correlatedProcessor, error) {
 	filters, err := buildFilters(logger, cfg)
 	if err != nil {
 		return nil, err
@@ -55,12 +37,27 @@ func newCProcessor(logger *zap.Logger, cfg Config, ch combinatorHook, dh decisio
 		decisionHook:    dh,
 		samplingHook:    sh,
 		filters:         filters,
-		samplingTracker: newSamplingTracker(logger, cfg.ID),
+		samplingTracker: sampling.NewTracker(logger, cfg.ID),
 		deleteChan:      make(chan pdata.TraceID, cfg.NumTraces),
 	}
 
 	b := newBatcher(logger, cfg.DecisionWait, p.makeDecision)
 	p.batcher = b
+
+	var e Signal
+	bb := bundler.NewBundler(&e, func(i interface{}) {
+		batch := i.([]*Signal)
+		for _, x := range batch {
+			p.applyDecision(*x)
+		}
+	})
+	bb.DelayThreshold = cfg.DecisionWait // TODO: use another cfg field
+	bb.BundleCountThreshold = 1000000
+	bb.BundleByteThreshold = 1e6 * 10 // 10M
+	bb.BundleByteLimit = 0            // unlimited
+	bb.BufferedByteLimit = 1e9        // 1G
+	bb.HandlerLimit = 1
+	p.bundler = bb
 
 	return p, nil
 }
@@ -70,7 +67,7 @@ func buildFilters(logger *zap.Logger, cfg Config) ([]sampling.Filter, error) {
 	for i := range cfg.FilterCfgs {
 		filterCfg := &cfg.FilterCfgs[i]
 
-		filter, err := newFilter(logger, filterCfg)
+		filter, err := sampling.NewFilter(logger, filterCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -86,7 +83,9 @@ func (c *correlatedProcessor) Start(ctx context.Context, host component.Host) er
 }
 
 func (c *correlatedProcessor) Shutdown(ctx context.Context) error {
-	c.batcher.FlushAll()
+	c.batcher.Close()
+	c.bundler.Flush()
+
 	return nil
 }
 
@@ -105,7 +104,7 @@ func (c *correlatedProcessor) GetCapabilities() component.ProcessorCapabilities 
 //  4.1 If decision == sampled, then forward to next consumer.
 //  4.2 If decision == not sampled, then drop.
 
-func (c *correlatedProcessor) ConsumeSignal(s signal) {
+func (c *correlatedProcessor) ConsumeSignal(s Signal) error {
 	decision := c.samplingTracker.GetDecision(s.TraceID)
 
 	// new trace
@@ -113,11 +112,16 @@ func (c *correlatedProcessor) ConsumeSignal(s signal) {
 		c.newTrace(s.TraceID)
 	}
 
-	if decision == sampling.Unspecified || decision == sampling.Pending {
-		c.addToBatch(s)
+	if decision == sampling.Unspecified || decision == sampling.Pending || s.TraceID == pdata.InvalidTraceID() {
+		err := c.addToBatch(s)
+		if err != nil {
+			return err
+		}
 	} else {
 		c.applyDecision(s)
 	}
+
+	return nil
 }
 
 func (c *correlatedProcessor) newTrace(traceID pdata.TraceID) {
@@ -136,25 +140,47 @@ func (c *correlatedProcessor) newTrace(traceID pdata.TraceID) {
 	}
 }
 
-func (c *correlatedProcessor) addToBatch(s signal) {
+func (c *correlatedProcessor) addToBatch(s Signal) error {
 	err := c.batcher.Add(s)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	c.samplingTracker.SetDecision(s.TraceID, sampling.Pending)
+	return nil
 }
 
-func (c *correlatedProcessor) makeDecision(xs []*signal) {
+func (c *correlatedProcessor) makeDecision(xs []*Signal) {
 	if len(xs) < 1 {
 		return
 	}
 
-	var finalDecision sampling.Decision
-
 	traceID := xs[0].TraceID
-	batch := c.combinatorHook(xs)
+	if traceID == pdata.InvalidTraceID() {
+		// optimize is required due to logs without traceID, these logs cannot be combined based on traceID.
+		c.optimize(xs)
+		return
+	}
 
+	batch := c.combinatorHook(xs)
+	finalDecision := c.applyFilters(traceID, batch)
+	c.samplingTracker.SetDecision(traceID, finalDecision)
+
+	_ = c.bundler.Add(&Signal{TraceID: traceID, Data: batch}, 1)
+}
+
+func (c *correlatedProcessor) optimize(batch []*Signal) {
+	for _, s := range batch {
+		decision := c.applyFilters(s.TraceID, s.Data)
+		if decision == sampling.Sampled {
+			// send to next consumer
+			c.samplingHook(s.Data)
+		}
+	}
+}
+
+func (c *correlatedProcessor) applyFilters(traceID pdata.TraceID, batch interface{}) sampling.Decision {
+	var finalDecision sampling.Decision
 	for _, policy := range c.filters {
 		decision, err := c.decisionHook(policy, traceID, batch)
 		if err != nil {
@@ -166,11 +192,10 @@ func (c *correlatedProcessor) makeDecision(xs []*signal) {
 		}
 	}
 
-	c.samplingTracker.SetDecision(traceID, finalDecision)
-	c.applyDecision(signal{TraceID: traceID, Data: batch})
+	return finalDecision
 }
 
-func (c *correlatedProcessor) applyDecision(s signal) {
+func (c *correlatedProcessor) applyDecision(s Signal) {
 	decision := c.samplingTracker.GetDecision(s.TraceID)
 	if decision == sampling.Sampled {
 		// send to next consumer

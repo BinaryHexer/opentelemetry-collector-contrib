@@ -1,0 +1,46 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+  filelog:
+    include: [ /var/log/*.log ]
+    operators:
+      - type: json_parser
+        timestamp:
+        parse_from: time
+        layout: '%Y-%m-%d %H:%M:%S'
+
+processors:
+  correlation_sampling:
+    id: signalgen
+    decision_wait: 30s
+    num_traces: 1000
+    filters:
+      [
+        {
+          name: sample-all,
+          type: percentage,
+          percentage: {sampling_percentage: 100}
+        },
+      ]
+
+exporters:
+  logging:
+    loglevel: debug
+
+extensions:
+  health_check:
+  pprof:
+  zpages:
+
+service:
+  extensions: [pprof, zpages, health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [correlation_sampling]
+      exporters: [logging]
+    logs:
+      receivers: [filelog]
+      processors: [correlation_sampling]
+      exporters: [logging]

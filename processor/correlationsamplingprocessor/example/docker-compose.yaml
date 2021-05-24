@@ -1,0 +1,37 @@
+version: "3"
+
+services:
+  otel-collector:
+    image: csp:latest
+    command: [ "--config=/etc/otel-collector-config.yaml" ]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - logdata:/var/log
+    ports:
+      - "1888:1888"   # pprof extension
+      - "8888:8888"   # Prometheus metrics exposed by the collector
+      - "8889:8889"   # Prometheus exporter metrics
+      - "13133:13133" # health_check extension
+      - "4317:4317"   # OTLP gRPC receiver
+      - "55670:55670" # zpages extension
+
+  # prometheus
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  # Load generator
+  load-generator:
+    image: signalgen:latest
+    command: [ "-duration=30m", "-otlp-insecure=true", "-otlp-endpoint=otel-collector:4317" ]
+    volumes:
+      - logdata:/var/log
+    depends_on:
+      - otel-collector
+      - prometheus
+
+volumes:
+  logdata:

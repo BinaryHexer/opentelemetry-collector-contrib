@@ -1,7 +1,10 @@
 package sampling
 
 import (
+	"fmt"
+
 	"go.opentelemetry.io/collector/consumer/pdata"
+	"go.uber.org/zap"
 )
 
 // Decision gives the status of sampling decision.
@@ -27,4 +30,19 @@ type Filter interface {
 	Name() string
 	ApplyForTrace(traceID pdata.TraceID, trace pdata.Traces) (Decision, error)
 	ApplyForLog(traceID pdata.TraceID, log pdata.Logs) (Decision, error)
+}
+
+func NewFilter(logger *zap.Logger, cfg *FilterCfgs) (Filter, error) {
+	switch cfg.Type {
+	case NumericAttribute:
+		return NewNumericAttributeFilter(logger, cfg.NumericAttributeCfg.Key, cfg.NumericAttributeCfg.MinValue, cfg.NumericAttributeCfg.MaxValue), nil
+	case StringAttribute:
+		return NewStringAttributeFilter(logger, cfg.StringAttributeCfg.Key, cfg.StringAttributeCfg.Values), nil
+	case Property:
+		return NewPropertyFilter(logger), nil
+	case Percentage:
+		return NewPercentageSample(logger, cfg.PercentageCfg.SamplingPercentage), nil
+	default:
+		return nil, fmt.Errorf("unknown sampling filter %s", cfg.Type)
+	}
 }

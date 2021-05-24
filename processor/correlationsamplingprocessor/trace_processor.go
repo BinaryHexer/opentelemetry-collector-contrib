@@ -1,4 +1,4 @@
-package correlatedsamplingprocessor
+package correlationsamplingprocessor
 
 import (
 	"context"
@@ -9,16 +9,19 @@ import (
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.uber.org/zap"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlatedsamplingprocessor/sampling"
+	"go.opentelemetry.io/collector/consumer/consumererror"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/correlation"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/sampling"
 )
 
 type traceProcessor struct {
 	ctx          context.Context
 	nextConsumer consumer.Traces
-	processor    *correlatedProcessor
+	processor    correlation.Processor
 }
 
-func newTraceProcessor(ctx context.Context, logger *zap.Logger, nextConsumer consumer.Traces, cfg Config) (component.TracesProcessor, error) {
+func newTracesProcessor(ctx context.Context, logger *zap.Logger, nextConsumer consumer.Traces, cfg Config) (component.TracesProcessor, error) {
 	if nextConsumer == nil {
 		return nil, componenterror.ErrNilNextConsumer
 	}
@@ -27,7 +30,7 @@ func newTraceProcessor(ctx context.Context, logger *zap.Logger, nextConsumer con
 		ctx:          ctx,
 		nextConsumer: nextConsumer,
 	}
-	ch := func(batches []*signal) (batch interface{}) {
+	ch := func(batches []*correlation.Signal) (batch interface{}) {
 		traces := make([]pdata.Traces, len(batches))
 		for i, b := range batches {
 			traces[i] = b.Data.(pdata.Traces)
@@ -42,7 +45,7 @@ func newTraceProcessor(ctx context.Context, logger *zap.Logger, nextConsumer con
 		tp.samplingHook(td.(pdata.Traces))
 	}
 
-	p, err := newCProcessor(logger, cfg, ch, dh, sh)
+	p, err := correlation.NewShardedProcessor(logger, cfg, ch, dh, sh)
 	if err != nil {
 		return nil, err
 	}
@@ -82,16 +85,21 @@ func (tp *traceProcessor) GetCapabilities() component.ProcessorCapabilities {
 }
 
 func (tp *traceProcessor) ConsumeTraces(ctx context.Context, td pdata.Traces) error {
+	var errors []error
+
 	traces := groupSpansByTraceID(td)
 	for traceID, trace := range traces {
-		s := signal{
+		s := correlation.Signal{
 			TraceID: traceID,
 			Data:    trace,
 		}
-		tp.processor.ConsumeSignal(s)
+		err := tp.processor.ConsumeSignal(s)
+		if err != nil {
+			errors = append(errors, err)
+		}
 	}
 
-	return nil
+	return consumererror.Combine(errors)
 }
 
 func groupSpansByTraceID(td pdata.Traces) map[pdata.TraceID]pdata.Traces {

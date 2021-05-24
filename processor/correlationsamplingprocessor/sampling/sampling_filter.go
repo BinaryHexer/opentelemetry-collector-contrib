@@ -3,10 +3,11 @@ package sampling
 import (
 	"math"
 
+	"time"
+
+	"github.com/CAFxX/fastrand"
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.uber.org/zap"
-	"github.com/CAFxX/fastrand"
-	"time"
 )
 
 type percentageSample struct {
@@ -27,7 +28,7 @@ func NewPercentageSample(logger *zap.Logger, samplingPercentage int64) *percenta
 }
 
 func (ps *percentageSample) Name() string {
-	return "percentage_sample"
+	return "sampling_filter"
 }
 
 func (ps *percentageSample) ApplyForTrace(traceID pdata.TraceID, trace pdata.Traces) (Decision, error) {
@@ -74,6 +75,10 @@ func NewSampler(allowRatio float64) *sampler {
 }
 
 func (s *sampler) Sample() bool {
-	t := float64(s.gen.Uint64()) / float64(1 << 64)
+	if s.threshold == 0 {
+		return true
+	}
+
+	t := float64(s.gen.Uint64()) / float64(1<<64)
 	return t > s.threshold
 }

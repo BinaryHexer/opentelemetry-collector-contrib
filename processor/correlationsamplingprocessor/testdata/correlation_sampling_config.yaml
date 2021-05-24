@@ -1,0 +1,36 @@
+receivers:
+  nop:
+
+exporters:
+  nop:
+
+processors:
+  correlation_sampling:
+    id: test
+    decision_wait: 10s
+    num_traces: 100
+    filters:
+      [
+        {
+          name: test-policy-1,
+          type: percentage,
+          percentage: {sampling_percentage: 100}
+        },
+        {
+          name: test-policy-2,
+          type: numeric_attribute,
+          numeric_attribute: {key: key1, min_value: 50, max_value: 100}
+        },
+        {
+          name: test-policy-3,
+          type: string_attribute,
+          string_attribute: {key: key2, values: [value1, value2]}
+        },
+      ]
+
+service:
+  pipelines:
+    traces:
+      receivers: [nop]
+      processors: [correlation_sampling]
+      exporters: [nop]

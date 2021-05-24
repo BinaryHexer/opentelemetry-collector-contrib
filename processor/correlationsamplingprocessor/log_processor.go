@@ -1,4 +1,4 @@
-package correlatedsamplingprocessor
+package correlationsamplingprocessor
 
 import (
 	"context"
@@ -9,16 +9,21 @@ import (
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.uber.org/zap"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlatedsamplingprocessor/sampling"
+	"math/rand"
+
+	"go.opentelemetry.io/collector/consumer/consumererror"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/correlation"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/sampling"
 )
 
 type logProcessor struct {
 	ctx          context.Context
 	nextConsumer consumer.Logs
-	processor    *correlatedProcessor
+	processor    correlation.Processor
 }
 
-func newLogProcessor(ctx context.Context, logger *zap.Logger, nextConsumer consumer.Logs, cfg Config) (component.LogsProcessor, error) {
+func newLogsProcessor(ctx context.Context, logger *zap.Logger, nextConsumer consumer.Logs, cfg Config) (component.LogsProcessor, error) {
 	if nextConsumer == nil {
 		return nil, componenterror.ErrNilNextConsumer
 	}
@@ -27,7 +32,7 @@ func newLogProcessor(ctx context.Context, logger *zap.Logger, nextConsumer consu
 		ctx:          ctx,
 		nextConsumer: nextConsumer,
 	}
-	ch := func(batches []*signal) (batch interface{}) {
+	ch := func(batches []*correlation.Signal) (batch interface{}) {
 		logs := make([]pdata.Logs, len(batches))
 		for i, b := range batches {
 			logs[i] = b.Data.(pdata.Logs)
@@ -42,7 +47,7 @@ func newLogProcessor(ctx context.Context, logger *zap.Logger, nextConsumer consu
 		lp.samplingHook(ld.(pdata.Logs))
 	}
 
-	p, err := newCProcessor(logger, cfg, ch, dh, sh)
+	p, err := correlation.NewShardedProcessor(logger, cfg, ch, dh, sh)
 	if err != nil {
 		return nil, err
 	}
@@ -82,16 +87,21 @@ func (lp *logProcessor) GetCapabilities() component.ProcessorCapabilities {
 }
 
 func (lp *logProcessor) ConsumeLogs(ctx context.Context, ld pdata.Logs) error {
+	var errors []error
+
 	logs := groupLogsByTraceID(ld)
 	for traceID, log := range logs {
-		s := signal{
+		s := correlation.Signal{
 			TraceID: traceID,
 			Data:    log,
 		}
-		lp.processor.ConsumeSignal(s)
+		err := lp.processor.ConsumeSignal(s)
+		if err != nil {
+			errors = append(errors, err)
+		}
 	}
 
-	return nil
+	return consumererror.Combine(errors)
 }
 
 func groupLogsByTraceID(ld pdata.Logs) map[pdata.TraceID]pdata.Logs {
@@ -106,6 +116,9 @@ func groupLogsByTraceID(ld pdata.Logs) map[pdata.TraceID]pdata.Logs {
 			for k := 0; k < ill.Logs().Len(); k++ {
 				logRecord := ill.Logs().At(k)
 				traceID := logRecord.TraceID()
+				//if traceID == pdata.InvalidTraceID() {
+				//	traceID = random()
+				//}
 
 				if _, ok := m[traceID]; !ok {
 					log := pdata.NewLogs()
@@ -122,6 +135,14 @@ func groupLogsByTraceID(ld pdata.Logs) map[pdata.TraceID]pdata.Logs {
 	}
 
 	return m
+}
+
+func random() pdata.TraceID {
+	v1 := uint8(rand.Intn(256))
+	v2 := uint8(rand.Intn(256))
+	v3 := uint8(rand.Intn(256))
+	v4 := uint8(rand.Intn(256))
+	return pdata.NewTraceID([16]byte{v1, v2, v3, v4})
 }
 
 func buildResourceLog(rl pdata.ResourceLogs, ill pdata.InstrumentationLibraryLogs, logRecord pdata.LogRecord) pdata.ResourceLogs {
