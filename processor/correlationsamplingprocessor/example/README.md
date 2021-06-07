@@ -6,7 +6,7 @@ Supported pipeline types: traces, logs
 
 1. From the root of the project, run:
 ```shell
-docker build -t otelcontribcol . -f processor/correlationsamplingprocessor/example/otelcontrib.Dockerfile
+docker build -t csp . -f processor/correlationsamplingprocessor/example/otelcontrib.Dockerfile
 docker build -t signalgen . -f processor/correlationsamplingprocessor/example/signalgen.Dockerfile
 ```
 

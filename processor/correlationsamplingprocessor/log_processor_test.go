@@ -16,9 +16,10 @@ import (
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/correlation"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/sampling"
+	"sync"
 )
 
-func TestBasicLogSampling(t *testing.T) {
+func TestSequentialLogSampling(t *testing.T) {
 	t.Cleanup(sampling.ResetTrackers)
 	t.Cleanup(correlation.ResetShards)
 
@@ -26,11 +27,12 @@ func TestBasicLogSampling(t *testing.T) {
 	const delta = 0
 	const samplingPercentage = 100
 	numTraces := 100
-	_, batches := generateLogBatches(numTraces, true)
+	_, batches1 := generateLogBatches(numTraces, true)
+	_, batches2 := generateLogBatches(numTraces, true)
 	cfg := Config{
-		ID:           "basic-log",
-		DecisionWait: decisionWait,
-		NumTraces:    uint64(numTraces),
+		CorrelationID: "sequential-log",
+		DecisionWait:  decisionWait,
+		NumTraces:     uint64(numTraces),
 		FilterCfgs: []sampling.FilterCfgs{
 			{
 				Name:          "test-policy",
@@ -46,10 +48,71 @@ func TestBasicLogSampling(t *testing.T) {
 	err := tp.Start(context.Background(), componenttest.NewNopHost())
 	assert.NoError(t, err)
 
-	for _, batch := range batches {
+	for _, batch := range batches1 {
 		err := tp.ConsumeLogs(context.Background(), batch)
 		assert.NoError(t, err)
 	}
+
+	time.Sleep(decisionWait)
+
+	for _, batch := range batches2 {
+		err := tp.ConsumeLogs(context.Background(), batch)
+		assert.NoError(t, err)
+	}
+
+	err = tp.Shutdown(context.Background())
+	assert.NoError(t, err)
+
+	obsRatio := (float64(getTraceIDCountFromLogs(msp.AllLogs())) / float64(numTraces)) * 100
+	assert.InDelta(t, samplingPercentage, obsRatio, delta)
+}
+
+func TestConcurrentLogSampling(t *testing.T) {
+	t.Cleanup(sampling.ResetTrackers)
+	t.Cleanup(correlation.ResetShards)
+
+	const decisionWait = time.Second
+	const delta = 0
+	const samplingPercentage = 100
+	numTraces := 100
+	_, batches := generateLogBatches(numTraces, true)
+	cfg := Config{
+		CorrelationID: "concurrent-log",
+		DecisionWait:  decisionWait,
+		NumTraces:     uint64(numTraces),
+		FilterCfgs: []sampling.FilterCfgs{
+			{
+				Name:          "test-policy",
+				Type:          sampling.Percentage,
+				PercentageCfg: sampling.PercentageCfg{SamplingPercentage: samplingPercentage},
+			},
+		},
+	}
+
+	msp := new(consumertest.LogsSink)
+	tp, _ := newLogsProcessor(context.TODO(), zap.NewNop(), msp, cfg)
+
+	err := tp.Start(context.Background(), componenttest.NewNopHost())
+	assert.NoError(t, err)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		for _, batch := range batches {
+			err := tp.ConsumeLogs(context.Background(), batch)
+			assert.NoError(t, err)
+		}
+		wg.Done()
+	}()
+	wg.Add(1)
+	go func() {
+		for _, batch := range batches {
+			err := tp.ConsumeLogs(context.Background(), batch)
+			assert.NoError(t, err)
+		}
+		wg.Done()
+	}()
+	wg.Wait()
 
 	err = tp.Shutdown(context.Background())
 	assert.NoError(t, err)
@@ -68,9 +131,9 @@ func TestLogsWithoutTraceIDSampling(t *testing.T) {
 	numTraces := 1000
 	count, batches := generateLogBatches(numTraces, false)
 	cfg := Config{
-		ID:           "log-without-traceID",
-		DecisionWait: decisionWait,
-		NumTraces:    uint64(numTraces),
+		CorrelationID: "log-without-traceID",
+		DecisionWait:  decisionWait,
+		NumTraces:     uint64(numTraces),
 		FilterCfgs: []sampling.FilterCfgs{
 			{
 				Name:          "test-policy",

@@ -13,12 +13,15 @@ import (
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/correlation"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/sampling"
+	"go.opencensus.io/stats"
+	"time"
 )
 
 type traceProcessor struct {
 	ctx          context.Context
 	nextConsumer consumer.Traces
 	processor    correlation.Processor
+	ticker       *time.Ticker
 }
 
 func newTracesProcessor(ctx context.Context, logger *zap.Logger, nextConsumer consumer.Traces, cfg Config) (component.TracesProcessor, error) {
@@ -29,6 +32,7 @@ func newTracesProcessor(ctx context.Context, logger *zap.Logger, nextConsumer co
 	tp := &traceProcessor{
 		ctx:          ctx,
 		nextConsumer: nextConsumer,
+		ticker:       time.NewTicker(time.Second),
 	}
 	ch := func(batches []*correlation.Signal) (batch interface{}) {
 		traces := make([]pdata.Traces, len(batches))
@@ -70,18 +74,27 @@ func combineTraces(traceBatches []pdata.Traces) pdata.Traces {
 
 func (tp *traceProcessor) samplingHook(td pdata.Traces) {
 	_ = tp.nextConsumer.ConsumeTraces(tp.ctx, td)
+
+	stats.Record(context.Background(), mReleasedSpans.M(int64(td.SpanCount())), mReleasedTraces.M(1))
 }
 
 func (tp *traceProcessor) Start(ctx context.Context, host component.Host) error {
-	return tp.processor.Start(ctx, host)
+	err := tp.processor.Start(ctx, host)
+	if err != nil {
+		return err
+	}
+
+	go tp.periodicMetrics()
+	return nil
 }
 
 func (tp *traceProcessor) Shutdown(ctx context.Context) error {
+	tp.ticker.Stop()
 	return tp.processor.Shutdown(ctx)
 }
 
-func (tp *traceProcessor) GetCapabilities() component.ProcessorCapabilities {
-	return component.ProcessorCapabilities{MutatesConsumedData: false}
+func (tp *traceProcessor) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: false}
 }
 
 func (tp *traceProcessor) ConsumeTraces(ctx context.Context, td pdata.Traces) error {
@@ -100,6 +113,16 @@ func (tp *traceProcessor) ConsumeTraces(ctx context.Context, td pdata.Traces) er
 	}
 
 	return consumererror.Combine(errors)
+}
+
+func (tp *traceProcessor) periodicMetrics() {
+	for range tp.ticker.C {
+		m := tp.processor.Metrics()
+
+		stats.Record(context.Background(), mNumTracesInMemory.M(m.TraceCount))
+		stats.Record(context.Background(), mNumSamplingDecisionInMemory.M(m.SamplingDecisionCount))
+		stats.Record(context.Background(), mTracesEvicted.M(m.EvictCount))
+	}
 }
 
 func groupSpansByTraceID(td pdata.Traces) map[pdata.TraceID]pdata.Traces {

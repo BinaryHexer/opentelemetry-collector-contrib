@@ -8,7 +8,7 @@ RUN make otelcontribcol
 FROM alpine:latest as certs
 RUN apk --update add ca-certificates
 
-FROM scratch
+FROM alpine:latest
 
 ARG USER_UID=10001
 USER ${USER_UID}

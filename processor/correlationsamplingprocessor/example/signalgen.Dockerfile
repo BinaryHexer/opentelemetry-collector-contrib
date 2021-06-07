@@ -14,7 +14,7 @@ RUN go build -trimpath -o /src/bin/signalgen_${GOOS}_${GOARCH} .
 FROM alpine:latest as certs
 RUN apk --update add ca-certificates
 
-FROM scratch
+FROM alpine:latest
 
 ARG USER_UID=10001
 USER ${USER_UID}

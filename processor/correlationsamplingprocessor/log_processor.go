@@ -9,18 +9,19 @@ import (
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.uber.org/zap"
 
-	"math/rand"
-
 	"go.opentelemetry.io/collector/consumer/consumererror"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/correlation"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/sampling"
+	"go.opencensus.io/stats"
+	"time"
 )
 
 type logProcessor struct {
 	ctx          context.Context
 	nextConsumer consumer.Logs
 	processor    correlation.Processor
+	ticker       *time.Ticker
 }
 
 func newLogsProcessor(ctx context.Context, logger *zap.Logger, nextConsumer consumer.Logs, cfg Config) (component.LogsProcessor, error) {
@@ -31,6 +32,7 @@ func newLogsProcessor(ctx context.Context, logger *zap.Logger, nextConsumer cons
 	lp := &logProcessor{
 		ctx:          ctx,
 		nextConsumer: nextConsumer,
+		ticker:       time.NewTicker(time.Second),
 	}
 	ch := func(batches []*correlation.Signal) (batch interface{}) {
 		logs := make([]pdata.Logs, len(batches))
@@ -72,18 +74,27 @@ func combineLogs(logBatches []pdata.Logs) pdata.Logs {
 
 func (lp *logProcessor) samplingHook(ld pdata.Logs) {
 	_ = lp.nextConsumer.ConsumeLogs(lp.ctx, ld)
+
+	stats.Record(context.Background(), mReleasedLogs.M(int64(ld.LogRecordCount())), mReleasedTraces.M(1))
 }
 
 func (lp *logProcessor) Start(ctx context.Context, host component.Host) error {
-	return lp.processor.Start(ctx, host)
+	err := lp.processor.Start(ctx, host)
+	if err != nil {
+		return err
+	}
+
+	go lp.periodicMetrics()
+	return nil
 }
 
 func (lp *logProcessor) Shutdown(ctx context.Context) error {
+	lp.ticker.Stop()
 	return lp.processor.Shutdown(ctx)
 }
 
-func (lp *logProcessor) GetCapabilities() component.ProcessorCapabilities {
-	return component.ProcessorCapabilities{MutatesConsumedData: false}
+func (lp *logProcessor) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: false}
 }
 
 func (lp *logProcessor) ConsumeLogs(ctx context.Context, ld pdata.Logs) error {
@@ -102,6 +113,16 @@ func (lp *logProcessor) ConsumeLogs(ctx context.Context, ld pdata.Logs) error {
 	}
 
 	return consumererror.Combine(errors)
+}
+
+func (lp *logProcessor) periodicMetrics() {
+	for range lp.ticker.C {
+		m := lp.processor.Metrics()
+
+		stats.Record(context.Background(), mNumTracesInMemory.M(m.TraceCount))
+		stats.Record(context.Background(), mNumSamplingDecisionInMemory.M(m.SamplingDecisionCount))
+		stats.Record(context.Background(), mTracesEvicted.M(m.EvictCount))
+	}
 }
 
 func groupLogsByTraceID(ld pdata.Logs) map[pdata.TraceID]pdata.Logs {
@@ -135,14 +156,6 @@ func groupLogsByTraceID(ld pdata.Logs) map[pdata.TraceID]pdata.Logs {
 	}
 
 	return m
-}
-
-func random() pdata.TraceID {
-	v1 := uint8(rand.Intn(256))
-	v2 := uint8(rand.Intn(256))
-	v3 := uint8(rand.Intn(256))
-	v4 := uint8(rand.Intn(256))
-	return pdata.NewTraceID([16]byte{v1, v2, v3, v4})
 }
 
 func buildResourceLog(rl pdata.ResourceLogs, ill pdata.InstrumentationLibraryLogs, logRecord pdata.LogRecord) pdata.ResourceLogs {

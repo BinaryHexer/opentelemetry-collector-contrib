@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/collector/config"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/processor/processorhelper"
+	"go.opencensus.io/stats/view"
 )
 
 const (
@@ -17,6 +18,9 @@ const (
 
 // NewFactory returns a new factory for the Correlation Sampling processor.
 func NewFactory() component.ProcessorFactory {
+	// TODO: find a more appropriate way to get this done, as we are swallowing the error here
+	_ = view.Register(MetricViews()...)
+
 	return processorhelper.NewFactory(
 		typeStr,
 		createDefaultConfig,
@@ -27,8 +31,8 @@ func NewFactory() component.ProcessorFactory {
 
 func createDefaultConfig() config.Processor {
 	return &Config{
-		ProcessorSettings: config.NewProcessorSettings(typeStr),
-		DecisionWait:      30 * time.Second,
+		ProcessorSettings: config.NewProcessorSettings(config.NewID(typeStr)),
+		DecisionWait:      time.Second,
 		NumTraces:         50000,
 	}
 }

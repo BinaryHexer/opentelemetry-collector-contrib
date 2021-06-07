@@ -9,6 +9,8 @@ import (
 	"google.golang.org/api/support/bundler"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/sampling"
+	"go.opentelemetry.io/collector/consumer"
+	"sync/atomic"
 )
 
 var _ Processor = (*correlatedProcessor)(nil)
@@ -23,6 +25,9 @@ type correlatedProcessor struct {
 	deleteChan      chan pdata.TraceID
 	batcher         batcher
 	bundler         *bundler.Bundler
+	// metrics
+	traceCount uint64
+	evictCount uint64
 }
 
 func NewProcessor(logger *zap.Logger, cfg Config, ch combinatorHook, dh decisionHook, sh samplingHook) (*correlatedProcessor, error) {
@@ -37,7 +42,7 @@ func NewProcessor(logger *zap.Logger, cfg Config, ch combinatorHook, dh decision
 		decisionHook:    dh,
 		samplingHook:    sh,
 		filters:         filters,
-		samplingTracker: sampling.NewTracker(logger, cfg.ID),
+		samplingTracker: sampling.NewTracker(logger, cfg.CorrelationID),
 		deleteChan:      make(chan pdata.TraceID, cfg.NumTraces),
 	}
 
@@ -49,6 +54,8 @@ func NewProcessor(logger *zap.Logger, cfg Config, ch combinatorHook, dh decision
 		batch := i.([]*Signal)
 		for _, x := range batch {
 			p.applyDecision(*x)
+			// subtract one from traceCount per https://godoc.org/sync/atomic#AddUint64
+			atomic.AddUint64(&p.traceCount, ^uint64(0))
 		}
 	})
 	bb.DelayThreshold = cfg.DecisionWait // TODO: use another cfg field
@@ -89,8 +96,8 @@ func (c *correlatedProcessor) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (c *correlatedProcessor) GetCapabilities() component.ProcessorCapabilities {
-	return component.ProcessorCapabilities{MutatesConsumedData: false}
+func (c *correlatedProcessor) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: false}
 }
 
 // 1. Check if signal is late arriving.
@@ -132,10 +139,11 @@ func (c *correlatedProcessor) newTrace(traceID pdata.TraceID) {
 			// there is space to add new trace
 			full = false
 		default:
-			// we need to delete a trace before adding a new one
+			// need to delete a trace before adding a new one
 			evictID := <-c.deleteChan
 			c.batcher.Flush(evictID)
 			c.samplingTracker.Delete(evictID)
+			atomic.AddUint64(&c.evictCount, 1)
 		}
 	}
 }
@@ -147,6 +155,8 @@ func (c *correlatedProcessor) addToBatch(s Signal) error {
 	}
 
 	c.samplingTracker.SetDecision(s.TraceID, sampling.Pending)
+	atomic.AddUint64(&c.traceCount, 1)
+
 	return nil
 }
 
@@ -166,6 +176,7 @@ func (c *correlatedProcessor) makeDecision(xs []*Signal) {
 	finalDecision := c.applyFilters(traceID, batch)
 	c.samplingTracker.SetDecision(traceID, finalDecision)
 
+	// must add to bundler even if the decision is not sampled since the decision might change due to correlation.
 	_ = c.bundler.Add(&Signal{TraceID: traceID, Data: batch}, 1)
 }
 
@@ -200,5 +211,13 @@ func (c *correlatedProcessor) applyDecision(s Signal) {
 	if decision == sampling.Sampled {
 		// send to next consumer
 		c.samplingHook(s.Data)
+	}
+}
+
+func (c *correlatedProcessor) Metrics() ProcessorMetrics {
+	return ProcessorMetrics{
+		TraceCount:            int64(atomic.LoadUint64(&c.traceCount)),
+		SamplingDecisionCount: c.samplingTracker.Count(),
+		EvictCount:            int64(atomic.LoadUint64(&c.evictCount)),
 	}
 }

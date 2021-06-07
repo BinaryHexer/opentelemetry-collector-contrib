@@ -32,6 +32,9 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/signalgen/internal/signalgen"
+	"go.opentelemetry.io/collector/testbed/testbed"
+	"strings"
+	"strconv"
 )
 
 func main() {
@@ -86,7 +89,16 @@ func main() {
 	tracerProvider.RegisterSpanProcessor(ssp)
 	otel.SetTracerProvider(tracerProvider)
 
-	if err := signalgen.Run(cfg, logger); err != nil {
-		logger.Error("failed to stop the exporter", zap.Error(err))
+	host := strings.Split(cfg.Endpoint, ":")[0]
+	port, _ := strconv.Atoi(strings.Split(cfg.Endpoint, ":")[1])
+	logSender := testbed.NewOTLPLogsDataSender(host, port)
+	err = logSender.Start()
+	if err != nil {
+		logger.Error("failed to start log exporter", zap.Error(err))
+		return
+	}
+
+	if err := signalgen.Run(cfg, logger, logSender); err != nil {
+		logger.Error("failed to start the worker", zap.Error(err))
 	}
 }

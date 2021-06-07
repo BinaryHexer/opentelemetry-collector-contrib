@@ -23,6 +23,7 @@ type Tracker interface {
 	GetDecision(pdata.TraceID) Decision
 	SetDecision(pdata.TraceID, Decision)
 	Delete(pdata.TraceID)
+	Count() int64
 }
 
 type trackerImp struct {
@@ -67,14 +68,14 @@ func (s *trackerImp) SetDecision(traceID pdata.TraceID, decision Decision) {
 	if d != Sampled {
 		s.decisionMap.Store(traceID, decision)
 	}
-
-	//if d == Unspecified || d == Pending {
-	//	s.decisionMap.Store(traceID, decision)
-	//}
 }
 
 func (s *trackerImp) Delete(traceID pdata.TraceID) {
 	s.decisionMap.Delete(traceID)
-	// Subtract one from traceCount per https://godoc.org/sync/atomic#AddUint64
+	// subtract one from traceCount per https://godoc.org/sync/atomic#AddUint64
 	atomic.AddUint64(&s.traceCount, ^uint64(0))
+}
+
+func (s *trackerImp) Count() int64 {
+	return int64(atomic.LoadUint64(&s.traceCount))
 }

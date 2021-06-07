@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.uber.org/zap"
+	"go.opentelemetry.io/collector/consumer"
 )
 
 const numShards = 100
@@ -34,10 +35,10 @@ type shardedProcessor struct {
 
 func NewShardedProcessor(logger *zap.Logger, cfg Config, ch combinatorHook, dh decisionHook, sh samplingHook) (*shardedProcessor, error) {
 	processors := make([]Processor, numShards)
-	IDs := newIDs(cfg.ID)
+	IDs := newIDs(cfg.CorrelationID)
 	for i := 0; i < numShards; i++ {
 		c := cfg
-		c.ID = IDs[i]
+		c.CorrelationID = IDs[i]
 		c.NumTraces = uint64(math.Max(float64(cfg.NumTraces/numShards), minTraces))
 		proc, err := NewProcessor(logger, c, ch, dh, sh)
 		if err != nil {
@@ -70,7 +71,7 @@ func newIDs(ID string) []string {
 	return newIDs
 }
 
-func (s shardedProcessor) Start(ctx context.Context, host component.Host) error {
+func (s *shardedProcessor) Start(ctx context.Context, host component.Host) error {
 	for _, p := range s.processors {
 		err := p.Start(ctx, host)
 		if err != nil {
@@ -81,7 +82,7 @@ func (s shardedProcessor) Start(ctx context.Context, host component.Host) error 
 	return nil
 }
 
-func (s shardedProcessor) Shutdown(ctx context.Context) error {
+func (s *shardedProcessor) Shutdown(ctx context.Context) error {
 	var errors []error
 
 	for _, p := range s.processors {
@@ -94,11 +95,11 @@ func (s shardedProcessor) Shutdown(ctx context.Context) error {
 	return consumererror.Combine(errors)
 }
 
-func (s shardedProcessor) GetCapabilities() component.ProcessorCapabilities {
-	return component.ProcessorCapabilities{MutatesConsumedData: false}
+func (s *shardedProcessor) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: false}
 }
 
-func (s shardedProcessor) ConsumeSignal(s2 Signal) error {
+func (s *shardedProcessor) ConsumeSignal(s2 Signal) error {
 	traceID := s2.TraceID
 	if traceID == pdata.InvalidTraceID() {
 		traceID = random()
@@ -112,7 +113,7 @@ func (s shardedProcessor) ConsumeSignal(s2 Signal) error {
 	return processor.ConsumeSignal(s2)
 }
 
-func (s shardedProcessor) findProcessor(traceID pdata.TraceID) (Processor, error) {
+func (s *shardedProcessor) findProcessor(traceID pdata.TraceID) (Processor, error) {
 	b := traceID.Bytes()
 	hasher := crc32.NewIEEE()
 
@@ -125,6 +126,18 @@ func (s shardedProcessor) findProcessor(traceID pdata.TraceID) (Processor, error
 	pos := hash % numShards
 
 	return s.processors[pos], nil
+}
+
+func (s *shardedProcessor) Metrics() ProcessorMetrics {
+	metrics := ProcessorMetrics{}
+	for _, p := range s.processors {
+		m := p.Metrics()
+		metrics.TraceCount += m.TraceCount
+		metrics.SamplingDecisionCount += m.SamplingDecisionCount
+		metrics.EvictCount += m.EvictCount
+	}
+
+	return metrics
 }
 
 func random() pdata.TraceID {

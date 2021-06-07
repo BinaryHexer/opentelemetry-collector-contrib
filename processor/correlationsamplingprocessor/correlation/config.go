@@ -10,9 +10,9 @@ import (
 
 // Config defines configuration for the Correlation sampling processor.
 type Config struct {
-	*config.ProcessorSettings `mapstructure:"-"`
+	config.ProcessorSettings `mapstructure:"-"`
 	// ID is used for correlation sampling between traces and logs.
-	ID string `mapstructure:"id"`
+	CorrelationID string `mapstructure:"correlation_id"`
 	// DecisionWait is the desired wait time from the arrival of the first span of
 	// trace until the decision about sampling it or not is evaluated.
 	DecisionWait time.Duration `mapstructure:"decision_wait"`

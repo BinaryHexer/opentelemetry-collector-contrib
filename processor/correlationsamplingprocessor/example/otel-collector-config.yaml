@@ -12,17 +12,19 @@ receivers:
 
 processors:
   correlation_sampling:
-    id: signalgen
-    decision_wait: 30s
-    num_traces: 1000
+    correlation_id: signalgen
+    decision_wait: 1s
+    num_traces: 1_000_000
     filters:
       [
         {
           name: sample-all,
           type: percentage,
-          percentage: {sampling_percentage: 100}
+          percentage: { sampling_percentage: 100 }
         },
       ]
+  batch:
+    send_batch_size: 100_000
 
 exporters:
   logging:
@@ -34,13 +36,13 @@ extensions:
   zpages:
 
 service:
-  extensions: [pprof, zpages, health_check]
+  extensions: [ pprof, zpages, health_check ]
   pipelines:
     traces:
-      receivers: [otlp]
-      processors: [correlation_sampling]
-      exporters: [logging]
+      receivers: [ otlp ]
+      processors: [ correlation_sampling, batch ]
+      exporters: [ logging ]
     logs:
-      receivers: [filelog]
-      processors: [correlation_sampling]
-      exporters: [logging]
+      receivers: [ filelog ]
+      processors: [ correlation_sampling, batch ]
+      exporters: [ logging ]

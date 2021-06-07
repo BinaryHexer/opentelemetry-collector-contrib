@@ -22,7 +22,7 @@ func TestCreateProcessor(t *testing.T) {
 
 	cfg := factory.CreateDefaultConfig().(*Config)
 	// Manually set required fields
-	cfg.ID = "test"
+	cfg.CorrelationID = "test"
 	cfg.FilterCfgs = []sampling.FilterCfgs{
 		{
 			Name:          "test-policy",

@@ -16,9 +16,10 @@ import (
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/correlation"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/correlationsamplingprocessor/sampling"
+	"sync"
 )
 
-func TestBasicTraceSampling(t *testing.T) {
+func TestSequentialTraceSampling(t *testing.T) {
 	t.Cleanup(sampling.ResetTrackers)
 	t.Cleanup(correlation.ResetShards)
 
@@ -29,9 +30,9 @@ func TestBasicTraceSampling(t *testing.T) {
 	_, batches1 := generateTraceBatches(numTraces)
 	_, batches2 := generateTraceBatches(numTraces)
 	cfg := Config{
-		ID:           "basic-trace",
-		DecisionWait: decisionWait,
-		NumTraces:    uint64(numTraces),
+		CorrelationID: "sequential-trace",
+		DecisionWait:  decisionWait,
+		NumTraces:     uint64(numTraces),
 		FilterCfgs: []sampling.FilterCfgs{
 			{
 				Name:          "test-policy",
@@ -58,6 +59,61 @@ func TestBasicTraceSampling(t *testing.T) {
 		err := tp.ConsumeTraces(context.Background(), batch)
 		assert.NoError(t, err)
 	}
+
+	err = tp.Shutdown(context.Background())
+	assert.NoError(t, err)
+
+	obsRatio := (float64(getTraceIDCountFromTraces(msp.AllTraces())) / float64(numTraces)) * 100
+	assert.InDelta(t, samplingPercentage, obsRatio, delta)
+}
+
+func TestConcurrentTraceSampling(t *testing.T) {
+	t.Cleanup(sampling.ResetTrackers)
+	t.Cleanup(correlation.ResetShards)
+
+	const decisionWait = time.Second
+	const delta = 0
+	const samplingPercentage = 100
+	numTraces := 100
+	_, batches1 := generateTraceBatches(numTraces)
+	_, batches2 := generateTraceBatches(numTraces)
+	cfg := Config{
+		CorrelationID: "concurrent-trace",
+		DecisionWait:  decisionWait,
+		NumTraces:     uint64(numTraces),
+		FilterCfgs: []sampling.FilterCfgs{
+			{
+				Name:          "test-policy",
+				Type:          sampling.Percentage,
+				PercentageCfg: sampling.PercentageCfg{SamplingPercentage: samplingPercentage},
+			},
+		},
+	}
+
+	msp := new(consumertest.TracesSink)
+	tp, _ := newTracesProcessor(context.TODO(), zap.NewNop(), msp, cfg)
+
+	err := tp.Start(context.Background(), componenttest.NewNopHost())
+	assert.NoError(t, err)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		for _, batch := range batches1 {
+			err := tp.ConsumeTraces(context.Background(), batch)
+			assert.NoError(t, err)
+		}
+		wg.Done()
+	}()
+	wg.Add(1)
+	go func() {
+		for _, batch := range batches2 {
+			err := tp.ConsumeTraces(context.Background(), batch)
+			assert.NoError(t, err)
+		}
+		wg.Done()
+	}()
+	wg.Wait()
 
 	err = tp.Shutdown(context.Background())
 	assert.NoError(t, err)

@@ -23,15 +23,15 @@ func TestBasicCorrelatedSampling(t *testing.T) {
 	const decisionWait = time.Second
 	const samplingPercentage = 10
 	const delta = 5 // error margin
-	numTraces := 1000
+	numTraces := 10000
 
 	_, traceBatches := generateTraceBatches(numTraces)
 	_, logBatches := generateLogBatches(numTraces, true)
 
 	cfg := Config{
-		ID:           "correlation",
-		DecisionWait: decisionWait,
-		NumTraces:    uint64(numTraces),
+		CorrelationID: "correlation",
+		DecisionWait:  decisionWait,
+		NumTraces:     uint64(numTraces),
 		FilterCfgs: []sampling.FilterCfgs{
 			{
 				Name:          "test-policy",

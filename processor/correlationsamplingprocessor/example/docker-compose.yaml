@@ -5,7 +5,7 @@ services:
     image: csp:latest
     command: [ "--config=/etc/otel-collector-config.yaml" ]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - ./groupbytrace.config.yaml:/etc/otel-collector-config.yaml
       - logdata:/var/log
     ports:
       - "1888:1888"   # pprof extension
@@ -26,7 +26,7 @@ services:
   # Load generator
   load-generator:
     image: signalgen:latest
-    command: [ "-duration=30m", "-otlp-insecure=true", "-otlp-endpoint=otel-collector:4317" ]
+    command: [ "-duration=5m", "-workers=10", "-otlp-insecure=true", "-otlp-endpoint=otel-collector:4317" ]
     volumes:
       - logdata:/var/log
     depends_on:

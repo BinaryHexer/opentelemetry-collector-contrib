@@ -23,10 +23,10 @@ func TestLoadConfig(t *testing.T) {
 	require.Nil(t, err)
 	require.NotNil(t, cfg)
 
-	assert.Equal(t, cfg.Processors["correlation_sampling"],
+	assert.Equal(t, cfg.Processors[config.NewID("correlation_sampling")],
 		&Config{
-			ProcessorSettings: config.NewProcessorSettings(typeStr),
-			ID:                "test",
+			ProcessorSettings: config.NewProcessorSettings(config.NewID(typeStr)),
+			CorrelationID:     "test",
 			DecisionWait:      10 * time.Second,
 			NumTraces:         100,
 			FilterCfgs: []sampling.FilterCfgs{

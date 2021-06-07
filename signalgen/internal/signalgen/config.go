@@ -24,6 +24,7 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
+	"go.opentelemetry.io/collector/testbed/testbed"
 )
 
 // Config describes the test scenario.
@@ -55,7 +56,7 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 }
 
 // Run executes the test scenario.
-func Run(c *Config, logger *zap.Logger) error {
+func Run(c *Config, logger *zap.Logger, logSender *testbed.OTLPLogsDataSender) error {
 	if c.TotalDuration > 0 {
 		c.NumTraces = 0
 	} else if c.NumTraces <= 0 {
@@ -82,6 +83,7 @@ func Run(c *Config, logger *zap.Logger) error {
 			running:          &running,
 			wg:               &wg,
 			logger:           logger.With(zap.Int("worker", i)),
+			logSender:        logSender,
 		}
 
 		go w.simulateTraces()
