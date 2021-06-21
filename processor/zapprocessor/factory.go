@@ -28,7 +28,7 @@ const (
 	typeStr = "zap"
 )
 
-var processorCapabilities = component.ProcessorCapabilities{MutatesConsumedData: true}
+var processorCapabilities = consumer.Capabilities{MutatesData: true}
 
 // NewFactory creates a factory for the routing processor.
 func NewFactory() component.ProcessorFactory {
@@ -41,13 +41,13 @@ func NewFactory() component.ProcessorFactory {
 
 func createDefaultConfig() config.Processor {
 	return &Config{
-		ProcessorSettings: config.NewProcessorSettings(typeStr),
+		ProcessorSettings: config.NewProcessorSettings(config.NewID(typeStr)),
 	}
 }
 
 func createLogProcessor(
 	_ context.Context,
-	_ component.ProcessorCreateParams,
+	_ component.ProcessorCreateSettings,
 	cfg config.Processor,
 	nextConsumer consumer.Logs,
 ) (component.LogsProcessor, error) {

@@ -20,5 +20,5 @@ import (
 
 // Config defines configuration for the Routing processor.
 type Config struct {
-	*config.ProcessorSettings `mapstructure:"-"`
+	config.ProcessorSettings `mapstructure:"-"`
 }

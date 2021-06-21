@@ -3,6 +3,6 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/zappr
 go 1.14
 
 require (
-	go.opentelemetry.io/collector v0.0.0-00010101000000-000000000000
+	go.opentelemetry.io/collector v0.27.1-0.20210608105628-44a4ae746c3c
 	google.golang.org/grpc v1.37.0 // indirect
 )

@@ -17,13 +17,14 @@ package zapprocessor
 import (
 	"context"
 
-	"go.opentelemetry.io/collector/consumer/pdata"
-	"go.opentelemetry.io/collector/consumer"
 	"strconv"
+
+	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/pdata"
 )
 
 type processorImp struct {
-	nextConsumer      consumer.Logs
+	nextConsumer consumer.Logs
 }
 
 // newLogProcessor returns a processor that modifies log record.
@@ -54,9 +55,8 @@ func convert(lr pdata.LogRecord) {
 	var body pdata.AttributeValue
 	attr := lr.Attributes()
 	bodyAttrs := lr.Body().MapVal()
-	keysToDel := make([]string, 0)
 
-	bodyAttrs.ForEach(func(k string, v pdata.AttributeValue) {
+	bodyAttrs.Range(func(k string, v pdata.AttributeValue) bool {
 		switch k {
 		case "ts":
 			ts, _ := strconv.ParseInt(v.StringVal(), 10, 64)
@@ -73,18 +73,23 @@ func convert(lr pdata.LogRecord) {
 			attr.Insert(k, v)
 		}
 
-		keysToDel = append(keysToDel, k)
+		return true
 	})
 
-	// remove all keys from body
-	//for _, k := range keysToDel {
-	//	bodyAttrs.Delete(k)
-	//}
+	// TODO: Move to datadog log exporter later.
+	{
+		ddx := pdata.NewAttributeValueMap()
+		dd := ddx.MapVal()
+		dd.Insert("span_id", pdata.NewAttributeValueString(convertToDDTraceID(lr.SpanID().HexString())))
+		dd.Insert("trace_id", pdata.NewAttributeValueString(convertToDDTraceID(lr.TraceID().HexString())))
+
+		attr.Insert("dd", ddx)
+	}
 
 	body.CopyTo(lr.Body())
 }
 
-func mapLevel(lvl string) (string, pdata.SeverityNumber)  {
+func mapLevel(lvl string) (string, pdata.SeverityNumber) {
 	switch lvl {
 	case "debug":
 		return "DEBUG", pdata.SeverityNumberDEBUG
@@ -99,4 +104,18 @@ func mapLevel(lvl string) (string, pdata.SeverityNumber)  {
 	}
 
 	return "INFO", pdata.SeverityNumberINFO
+}
+
+func convertToDDTraceID(id string) string {
+	if len(id) < 16 {
+		return ""
+	}
+	if len(id) > 16 {
+		id = id[16:]
+	}
+	intValue, err := strconv.ParseUint(id, 16, 64)
+	if err != nil {
+		return ""
+	}
+	return strconv.FormatUint(intValue, 10)
 }
